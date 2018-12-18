@@ -79,6 +79,10 @@ end
 
 module LC3Vm
   include Vm
+  Signal::INT.trap do
+    puts "SIGINT"
+    exit
+  end
   VERSION = "0.1.0"
   STDIN.read_buffering = false
   STDIN.noecho!
