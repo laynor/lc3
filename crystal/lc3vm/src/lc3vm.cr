@@ -36,8 +36,8 @@ module Foo
     (lea R1, 22), # load jump address
     (jmp R1),     # jump data
     0_u16,
-    27_u16,
-    '['.ord.to_u16,
+    ((97 << 8) + 65).to_u16,
+    0_u16,
     '3'.ord.to_u16,
     '1'.ord.to_u16,
     'm'.ord.to_u16,
@@ -56,8 +56,11 @@ module Foo
     '9'.ord.to_u16,
     'm'.ord.to_u16,
     0_u16,
-    (add R0, R5, 1), # load base string address into R0
-    puts!,
+    (loglev LogLevel::Warning),
+    (addi R0, R5, 1), # load base string address into R0
+    res,
+    putsp, # prompt the user for a key
+    getc,
     getc,
     (ld R0, 1), # load next next word into R0
     (jsr 1),
@@ -67,7 +70,7 @@ module Foo
     (ldr R3, R0, 0), # kbd loop start
     (br 0b010, -2), # previous instruction is -2! (PC already points to next instruction)
     (ldr R4, R0, 1), # kbd data register
-    res,
+    prnregs,
     halt,
   ]
 
@@ -78,11 +81,11 @@ module LC3Vm
   include Vm
   VERSION = "0.1.0"
   vm = LC3Vm.new
-  # vm.load(Foo::Program)
-  puts "loading #{ARGV[0]}"
-  gets
-  vm.read_image_file(ARGV[0])
-  # vm.loglevel = LogLevel::Error
-  # vm.debug = true
+  if ARGV.empty?
+    vm.load(Foo::Program)
+  else
+    # puts "loading #{ARGV[0]}"
+    vm.read_image_file(ARGV[0])
+  end
   vm.run
 end

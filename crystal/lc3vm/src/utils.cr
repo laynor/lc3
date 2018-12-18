@@ -26,7 +26,7 @@ module Utils
   end
 
   def bit(word, i)
-    word >> i & 1
+    (word >> i) & 1
   end 
 
   def bit?(word, i)
@@ -34,8 +34,8 @@ module Utils
   end
 
   def sign_extend(x, bit_count)
-    if x >> (bit_count -1) & 1 == 1 
-      x | 0xFFFF << bit_count
+    if bit?(x, bit_count - 1)
+      x | (0xFFFF << bit_count)
     else  
       x
     end 

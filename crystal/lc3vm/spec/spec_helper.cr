@@ -1,2 +1,2 @@
 require "spec"
-require "../src/lc3vm"
+require "../src/vm"

@@ -56,6 +56,15 @@ module Vm
     HALT  = 0x25
   end 
 
+  enum Res
+    PRNREG
+    DEBUG
+    LOGLEV
+    def <<(n)
+      self.value.to_u16 << n
+    end
+  end
+
   @[Flags]
   enum Flg
     POS = 1

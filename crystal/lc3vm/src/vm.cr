@@ -24,7 +24,7 @@ module Vm
 
     def initialize
       @mem      = Array(UInt16).new(MEM_SIZE, 0_u16)
-      @loglevel = LogLevel::Info
+      @loglevel = LogLevel::Warning
       @debug    = false
       @running  = false
 
@@ -55,9 +55,19 @@ module Vm
 
 
     ## instructions
-
     def res(args)
-      print_registers
+      op, opargs = bitsplit(args, [4, 8])
+
+      case Res.new(op.to_i)
+      when Res::PRNREG
+        print_registers
+      when Res::DEBUG
+        @debug = (opargs != 0)
+        puts "debug = #{@debug}"
+      when Res::LOGLEV
+        @loglevel = LogLevel.new(opargs.to_i)
+        puts "loglevel = #{@loglevel}"
+      end
     end
 
     # Riduzione del codice per equivalenze
@@ -72,15 +82,15 @@ module Vm
 
       dr, sr1, mode, imm5 = bitsplit(args, [3, 3, 1, 5])
 
-      @reg[dr] = if mode == 1
+      if mode == 1
         # sign extend the last 5 bits
-        @reg[sr1] + sign_extend(imm5, 5)
+        @reg[dr] = @reg[sr1] + sign_extend(imm5, 5)
       else
         _, sr2 = bitsplit(imm5, [2, 3])
-        @reg[sr1] + @reg[sr2]
+        @reg[dr] = @reg[sr1] + @reg[sr2]
       end
 
-      update_flags(dr.to_i)
+      update_flags(dr)
     end
 
     def and(args : UInt16)
@@ -103,7 +113,7 @@ module Vm
 
     def not(args)
       dr, sr, _ = bitsplit(args, [3, 3, 6])
-      @reg[dr] = ~@reg[sr]
+      @reg[dr]  = ~@reg[sr]
       update_flags(dr)
     end
 
@@ -123,25 +133,28 @@ module Vm
       addr = mem_read(r_pc + sign_extend(off9, 9))
       # load the calue from the calculated address
       @reg[dr] = mem_read(addr)
+
       update_flags(dr)
     end
 
     def ldr(args)
       dr, baseR, off6 = bitsplit(args, [3, 3, 6])     
       @reg[dr] = mem_read(@reg[baseR] + sign_extend(off6, 6))
+
       update_flags(dr)
     end
 
     def lea(args)
       dr, off9 = bitsplit(args, [3, 9])
       @reg[dr] = r_pc + sign_extend(off9, 9)
+
       update_flags(dr)
     end
 
     def st(args)
-      # iwuction format
+      # instruction format
       # opc(4) sr(3) pcoffset(9)
-      sr, off9 = bitsplit(args, [4, 3, 9])
+      sr, off9 = bitsplit(args, [3, 9])
       mem_store(r_pc + sign_extend(off9, 9), @reg[sr])
     end 
 
@@ -158,7 +171,7 @@ module Vm
     def str(args)
       sr, baseR, off6 = bitsplit(args, [3, 3, 6])
       mem_store(@reg[baseR] + sign_extend(off6, 6), 
-      @reg[sr])
+                @reg[sr])
     end
 
     # Branching/Jumping
@@ -175,26 +188,14 @@ module Vm
       @r_pc = @reg[baseR]
     end
 
-    def ret(args)
-      jmp(args)
-    end
-
     def rti(args)
-      if !bit?(r_psr, 15)
-        @r_pc    = mem_read(@reg[6])
-        @reg[6] += 1
-        tmp = mem_read(@reg[6])
-        @reg[6] += 1
-        @r_psr   = tmp
-        # todo: the interrupted process are restored
-      else
-        # todo: privilege mode exception
-      end 
+      raise "RTI Not implemented!"
     end
 
     def jsr(args)
       mode, off11 = bitsplit(args, [1, 11])
       _, baseR, _ = bitsplit(off11, [2, 3, 6])
+      @reg[7] = @r_pc
       if mode == 1
         @r_pc += sign_extend(off11, 11)
       else
@@ -202,7 +203,9 @@ module Vm
       end
     end
 
+
     def trap(args)
+      @reg[7] = r_pc
       _, trapv = bitsplit(args, [4, 8])
       # real assembler implementation
       # @reg[7] = r_pc
@@ -220,6 +223,8 @@ module Vm
         trap_putsp
       when Trap::HALT
         trap_halt
+      when Trap::OUT
+        trap_out
       end
     end
 
@@ -232,12 +237,17 @@ module Vm
       end
     end
 
+    def trap_out
+      STDOUT << (@reg[0] & 0xFF).to_u8.chr
+      STDOUT.flush
+    end
+
     def trap_puts
       # fixme
       # endianess?
       i = @reg[0]
       buff = Bytes.new(1)
-      while @mem[i] != 0
+      while (@mem[i] &0xFF) != 0
         buff[0] = @mem[i].to_u8
         STDOUT.write(buff)
         i += 1
@@ -362,22 +372,20 @@ module Vm
     def read_image_file(path)
       File.open(path) do |f|
         i = PC_START
-
-        while true
-          begin
-            @mem[i] = f.read_bytes(UInt16, IO::ByteFormat::BigEndian)
-            i += 1
-          rescue
-            break
+        begin
+          while true
+              @mem[i] = f.read_bytes(UInt16, IO::ByteFormat::BigEndian)
+              i += 1
           end
+        rescue
         end
-
       end
     end
 
     def step
+      # puts "Reading %04x" % r_pc
       iw = mem_read r_pc
-      log LogLevel::Info, "Instr: %016b - %s" % [iw, ISA.decode(iw)]
+      log LogLevel::Info, "%04x Instr: %016b - %s" % [@r_pc, iw, ISA.decode(iw)]
       gets if @debug
       @r_pc += 1
 
@@ -392,7 +400,7 @@ module Vm
         c1 = (c1 != 0) ? c1.chr : ' '
         c2 = (c2 != 0) ? c2.chr : ' '
         
-        log LogLevel::Info, "#{fmt % word} Op: #{Op.new(opc.to_i)} #{c1}#{c2}"
+        log LogLevel::Info, "#{fmt % word} Op: #{Op.new(opc.to_i)} \"#{c1}#{c2}\""
       end
     end
 
@@ -405,7 +413,7 @@ module Vm
       puts
 
       @r_pc = PC_START
-      puts "PC: #{r_pc} #{"0x%04x" % PC_START}"
+      log LogLevel::Info, "PC: #{r_pc} #{"0x%04x" % PC_START}"
       @running = true
 
       while @running
@@ -414,16 +422,16 @@ module Vm
     end
 
     def print_registers
-      log LogLevel::Info, "-" * 80
+      puts "-" * 80
       (0..3).each do |i|
         rl = Reg.new(i).to_s
         rr = Reg.new(4 + i).to_s
-        log LogLevel::Info, "#{rl}: %04x #{rr}: %04x" % [ @reg[i], @reg[4+i] ]
+        puts "# #{rl}: %04x   #{rr}: %04x" % [ @reg[i], @reg[4+i] ]
       end
-      log LogLevel::Info, "" 
-      log LogLevel::Info, "PC: %04x %016b COND: %03b %s" % [r_pc, r_pc, r_cond, "#{Flg.new(r_cond.to_i)}"]
-      log LogLevel::Info, "-" * 80
-      log LogLevel::Info, ""
+      puts "" 
+      puts "# PC: %04x   %016b\n# NZP: %03b   %s" % [r_pc, r_pc, r_cond, "#{Flg.new(r_cond.to_i)}"]
+      puts "-" * 80
+      puts ""
     end
   end
 

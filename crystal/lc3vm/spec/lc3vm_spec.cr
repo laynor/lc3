@@ -1,6 +1,6 @@
 require "./spec_helper"
 
-describe Lc3vm do
+describe LC3Vm do
   # TODO: Write tests
 
   it "works" do

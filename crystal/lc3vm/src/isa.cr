@@ -151,6 +151,18 @@ module Vm
       (Op::TRAP << 12) | trapv8
     end
 
+    def prnregs
+      (Op::RES << 12) | (Res::PRNREG << 8) 
+    end
+
+    def loglev(n)
+      (Op::RES << 12) | (Res::LOGLEV << 8) | (n.to_i & 0x3)
+    end
+
+    def debug(enable)
+      (Op::RES << 12) | (Res::DEBUG << 8) | ( enable ? 1 : 0)
+    end
+
     def getc
       trap(0x20_u16)
     end
