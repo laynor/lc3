@@ -28,7 +28,7 @@ module Vm
       @debug    = false
       @running  = false
 
-      # registers 
+      # registers
       @reg      = Array(UInt16).new(8, 0_u16)
       @r_pc     = 0_u16
       @r_psr    = 0_u16
@@ -38,7 +38,7 @@ module Vm
     # utilities
     def update_flags(reg)
       val  = @reg[reg]
-      flag = case 
+      flag = case
         when val == 0
           Flg::ZRO
         when bit?(val, 15)
@@ -47,7 +47,7 @@ module Vm
           Flg::POS
         end
       @r_cond = flag.to_u16
-    end 
+    end
 
     def log(lev, msg)
       puts "[#{lev}] #{msg}" if lev >= @loglevel
@@ -126,7 +126,7 @@ module Vm
     end
 
     def ldi(args)
-      # iwuction format 
+      # instruction format
       # opc(4) dr(3) pcoffset(9)
       dr, off9 = bitsplit(args, [3, 9])
       # load the address from MEM[PC + OFFSET]
@@ -138,7 +138,7 @@ module Vm
     end
 
     def ldr(args)
-      dr, baseR, off6 = bitsplit(args, [3, 3, 6])     
+      dr, baseR, off6 = bitsplit(args, [3, 3, 6])
       @reg[dr] = mem_read(@reg[baseR] + sign_extend(off6, 6))
 
       update_flags(dr)
@@ -156,10 +156,10 @@ module Vm
       # opc(4) sr(3) pcoffset(9)
       sr, off9 = bitsplit(args, [3, 9])
       mem_store(r_pc + sign_extend(off9, 9), @reg[sr])
-    end 
+    end
 
     def sti(args)
-      # iwuction format 
+      # instruction format
       # opc(4) dr(3) pcoffset(9)
       sr, off9 = bitsplit(args, [3, 9])
       # load the address from MEM[PC + OFFSET]
@@ -170,7 +170,7 @@ module Vm
 
     def str(args)
       sr, baseR, off6 = bitsplit(args, [3, 3, 6])
-      mem_store(@reg[baseR] + sign_extend(off6, 6), 
+      mem_store(@reg[baseR] + sign_extend(off6, 6),
                 @reg[sr])
     end
 
@@ -271,19 +271,19 @@ module Vm
         i += 1
       end
       STDOUT.flush
-    end 
+    end
 
     def trap_halt
       @running = false
     end
     # engine
 
-    def mem_store(addr, val)
+    def mem_store(addr : UInt16, val : UInt16)
       @mem[addr] = val
     end
 
     def mem_read(addr : UInt16)
-      
+
       if addr == MMIO_KBSR
         if stdin_empty?
           @mem[MMIO_KBSR] = 0
@@ -296,9 +296,9 @@ module Vm
             raise "Nil char returned!"
           end
         end
-      end 
+      end
       @mem[addr.to_i]
-    end 
+    end
 
     def interpret(iw : UInt16)
 
@@ -393,13 +393,13 @@ module Vm
     end
 
     def print_mem(from=0, to=65535, fmt="%016b")
-      (from..to).each do |i| 
+      (from..to).each do |i|
         word = @mem[i]
         opc, _ = bitsplit(word, [4, 12])
         c1, c2 = bitsplit(word, [8, 8])
         c1 = (c1 != 0) ? c1.chr : ' '
         c2 = (c2 != 0) ? c2.chr : ' '
-        
+
         log LogLevel::Info, "#{fmt % word} Op: #{Op.new(opc.to_i)} \"#{c1}#{c2}\""
       end
     end
@@ -428,7 +428,7 @@ module Vm
         rr = Reg.new(4 + i).to_s
         puts "# #{rl}: %04x   #{rr}: %04x" % [ @reg[i], @reg[4+i] ]
       end
-      puts "" 
+      puts ""
       puts "# PC: %04x   %016b\n# NZP: %03b   %s" % [r_pc, r_pc, r_cond, "#{Flg.new(r_cond.to_i)}"]
       puts "-" * 80
       puts ""
