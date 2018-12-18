@@ -69,17 +69,17 @@ module Vm
       end
     end
 
-    def add(dr, sr1, sr2) 
-      (Op::ADD << 12) | (dr << 9) | (sr1 << 6) | (sr2 << 0) 
+    def add(dr, sr1, sr2)
+      (Op::ADD << 12) | (dr << 9) | (sr1 << 6) | (sr2 << 0)
     end
 
     def addi(dr, sr1, imm)
       #       opcode dr  sr1 m imm5
       (Op::ADD << 12) | (dr << 9) | (sr1 << 6) | 1 << 5 | (imm & 0b11111)
-    end 
+    end
 
     def and(dr, sr1, sr2)
-      (Op::AND << 12) | (dr << 9) | (sr1 << 6) | sr2
+      (Op::AND << 12) | (dr << 9) | (sr1 << 6) | (sr2 << 0)
     end
 
     def andi(dr, sr1, imm)
@@ -96,7 +96,7 @@ module Vm
 
     def ldi(dr, off9)
       (Op::LDI << 12) | (dr << 9) | (off9 & 0b1_1111_1111)
-    end 
+    end
 
     def ldr(dr, baseR, off6)
       (Op::LDR << 12) | (dr << 9) | (baseR << 6) | off6
@@ -104,11 +104,11 @@ module Vm
 
     def st(sr, off9)
       (Op::ST << 12) | (sr << 9) | off9
-    end 
+    end
 
     def sti(dr, off9)
-      (Op::STI << 12) | (dr << 9) | (off9 & 0b1_1111_1111)  
-    end 
+      (Op::STI << 12) | (dr << 9) | (off9 & 0b1_1111_1111)
+    end
 
     def str(sr, baseR, off6)
       (Op::STR << 12) | (sr << 9) | (baseR << 6) | off6
@@ -148,11 +148,11 @@ module Vm
 
     # traps
     def trap(trapv8)
-      (Op::TRAP << 12) | trapv8
+      (Op::TRAP << 12) | (trapv8.to_i & 0xFF)
     end
 
     def prnregs
-      (Op::RES << 12) | (Res::PRNREG << 8) 
+      (Op::RES << 12) | (Res::PRNREG << 8)
     end
 
     def loglev(n)
@@ -164,24 +164,24 @@ module Vm
     end
 
     def getc
-      trap(0x20_u16)
+      trap(Trap::GETC)
     end
 
     def out
-      trap(0x21_u16)
+      trap(Trap::OUT)
     end
 
     def puts!
-      trap(0x22)
+      trap(Trap::PUTS)
     end
     def in
-      trap(0x23)
+      trap(Trap::IN)
     end
     def putsp
-      trap(0x24)
+      trap(Trap::PUTSP)
     end
     def halt
-      trap(0x25)
+      trap(Trap::HALT)
     end
   end
 end

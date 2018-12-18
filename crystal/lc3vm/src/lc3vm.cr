@@ -66,7 +66,7 @@ module Foo
     (jsr 1),
     0xFE00_u16, # keyboard status register address
     res,
-    (lea R2, 0), 
+    (lea R2, 0),
     (ldr R3, R0, 0), # kbd loop start
     (br 0b010, -2), # previous instruction is -2! (PC already points to next instruction)
     (ldr R4, R0, 1), # kbd data register
@@ -74,7 +74,7 @@ module Foo
     halt,
   ]
 
-end 
+end
 
 
 module LC3Vm
@@ -84,8 +84,7 @@ module LC3Vm
   if ARGV.empty?
     vm.load(Foo::Program)
   else
-    # puts "loading #{ARGV[0]}"
-    vm.read_image_file(ARGV[0])
+    vm.read_image_file ARGV[0]
   end
   vm.run
 end
