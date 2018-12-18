@@ -80,6 +80,8 @@ end
 module LC3Vm
   include Vm
   VERSION = "0.1.0"
+  STDIN.read_buffering = false
+  STDIN.noecho!
   vm = LC3Vm.new
   if ARGV.empty?
     vm.load(Foo::Program)

@@ -372,10 +372,12 @@ module Vm
     def read_image_file(path)
       File.open(path) do |f|
         i = PC_START
+        size = f.read_bytes(UInt16, IO::ByteFormat::BigEndian)
+
         begin
           while true
-              @mem[i] = f.read_bytes(UInt16, IO::ByteFormat::BigEndian)
-              i += 1
+            @mem[i] = f.read_bytes(UInt16, IO::ByteFormat::BigEndian)
+            i += 1
           end
         rescue
         end
@@ -400,7 +402,7 @@ module Vm
         c1 = (c1 != 0) ? c1.chr : ' '
         c2 = (c2 != 0) ? c2.chr : ' '
 
-        log LogLevel::Info, "#{fmt % word} Op: #{Op.new(opc.to_i)} \"#{c1}#{c2}\""
+        log LogLevel::Info, "#{"%04x" % i} #{fmt % word} #{"%04x" % word} Op: #{Op.new(opc.to_i)} \"#{c1}#{c2}\""
       end
     end
 
@@ -409,7 +411,7 @@ module Vm
       log LogLevel::Info, "Mem: #{MEM_SIZE} words"
       log LogLevel::Info, " "
 
-      print_mem(PC_START, PC_START+32)
+      print_mem(PC_START - 1, PC_START+32)
       puts
 
       @r_pc = PC_START
