@@ -192,6 +192,21 @@ describe Vm do
   end
 
   describe "br" do
+    it "BRz should branch the right address" do
+      vm = LC3Vm.new
+      vm.@mem[0x4000] = 0xABCD_u16
+      vm.@reg[0] = 0x4000
+      vm.r_pc = 0x3000_u16
+      vm.@mem[0x3000] = ISA.ld(Reg::R0, 1)
+      vm.@mem[0x3000] = ISA.br(Reg::R0, 1)
+      vm.step
+
+      vm.@reg[0].should eq 0xABCD_u16
+      vm.r_cond.should eq Flg::NEG.to_u16
+      vm.r_pc.should eq 0x3001
+
+      # TODO
+    end
   end
 
   describe "jmp" do
