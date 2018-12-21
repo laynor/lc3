@@ -96,9 +96,9 @@ mod Programs {
         let _ = [
             lea(  R0, 0),
             add(  R1, R0, R2),
-            andi(  R1, R0, 7),
+            andi( R1, R0, 7),
             and(  R0, R0, 0), // clear R0
-            ld( R0, 0xFFFF),
+            ld(   R0, 0xFFFF),
         ];
     }
 }
@@ -315,7 +315,13 @@ impl LC3Vm {
     // traps
 
     fn trap_getc(&mut self) {
-
+        let ch = ncurses::getch();
+        match ch {
+            -1 => panic!("error reading char"),
+            _  => {
+                self.reg[0] = ch as u8 as u16;
+            }
+        }
     }
 
     fn trap_out(&mut self) {
@@ -326,30 +332,44 @@ impl LC3Vm {
     }
 
     fn trap_in(&mut self) {
-        use std::io::Read;
-        let char = std::io::stdin()
-            .bytes()
-            .next();
-        match char {
-            Some(b) => match b {
-                Ok(b) => {
-                    self.reg[0] = b as u16;
-                },
-                Err(e) => panic!(e)
-            }
-            None => panic!("timeout reading char?")
-        }
+        println!("Enter a character");
+        self.trap_getc();
     }
 
     fn trap_puts(&mut self) {
-        let start_addr = self.reg[0];
-        let mut iter = self.mem.into_iter();
-        let foo = vec![1,2,3];
+        use std::io::Write;
 
+        let i = self.reg[0] as usize;
+        while self.mem[i] &0xFF != 0 {
+            print!("{}", self.mem[i] as u8 as char);
+        }
+        std::io::stdout().flush().ok();
     }
 
     fn trap_putsp(&mut self) {
+        use std::io::Write;
 
+        let i = self.reg[0] as usize;
+        loop {
+            let ch1 = self.mem[i] >> 8;
+            match ch1 {
+                0  => break,
+                ch => {
+                    print!("{}", ch);
+                }
+            }
+
+            let ch2 = self.mem[i] & 0xFF;
+            match ch2 {
+                0 => break,
+                ch => {
+                    print!("{}", ch);
+                }
+            }
+
+            print!("{}", self.mem[i] as u8 as char);
+        }
+        std::io::stdout().flush().ok();
     }
 
     fn update_flags(&mut self, val: u16) -> u16 {
@@ -382,5 +402,23 @@ impl LC3Vm {
 
     fn mem_write(&mut self, addr:u16, value:u16) {
         self.mem[addr as usize] = value;
+    }
+
+    fn load_image_file(&mut self, path:&str) {
+        use byteorder::{BigEndian, ReadBytesExt};
+        use std::io::Read;
+        let f = std::fs::File::open(path).ok().unwrap();
+
+        let mut rd = std::io::BufReader::new(f);
+
+        let size = rd.read_u16::<BigEndian>().ok().unwrap() as usize;
+
+        for i in 0..(size - 1) {
+            let word = rd.read_u16::<BigEndian>();
+            match word {
+                Err(e) => break,
+                Ok(w)  => {self.mem[LC3Vm::PC_START as usize + i] = w;},
+            }
+        }
     }
 }
