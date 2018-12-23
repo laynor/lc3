@@ -5,131 +5,7 @@ use std::thread;
 use std::sync::mpsc;
 use std::num::Wrapping;
 
-type Word = Wrapping<u16>;
 
-pub mod op {
-    pub const BR:   u16 = 0x0;  // branch
-    pub const ADD:  u16 = 0x1;  // add
-    pub const LD:   u16 = 0x2;  // load
-    pub const ST:   u16 = 0x3;  // store
-    pub const JSR:  u16 = 0x4;  // jump register
-    pub const AND:  u16 = 0x5;  // bitwise and
-    pub const LDR:  u16 = 0x6;  // load register
-    pub const STR:  u16 = 0x7;  // store register
-    pub const RTI:  u16 = 0x8;  // unused
-    pub const NOT:  u16 = 0x9;  // bitwise not
-    pub const LDI:  u16 = 0xA;  // load indirect
-    pub const STI:  u16 = 0xB;  // store indirect
-    pub const JMP:  u16 = 0xC;  // jump
-    pub const RES:  u16 = 0xD;  // reserved (unused)
-    pub const LEA:  u16 = 0xE;  // load effective address
-    pub const TRAP: u16 = 0xF;  // trap
-}
-
-mod Reg {
-    pub const R0: u16 = 0;
-    pub const R1: u16 = 1;
-    pub const R2: u16 = 2;
-    pub const R3: u16 = 3;
-    pub const R4: u16 = 4;
-    pub const R5: u16 = 5;
-    pub const R6: u16 = 6;
-    pub const R7: u16 = 7;
-}
-
-mod Flg {
-    pub const POS: u16 = 1;
-    pub const ZRO: u16 = 2;
-    pub const NEG: u16 = 4;
-}
-
-mod Trap {
-    pub const GETC:  u16 = 0x20;
-    pub const OUT:   u16 = 0x21;
-    pub const PUTS:  u16 = 0x22;
-    pub const IN:    u16 = 0x23;
-    pub const PUTSP: u16 = 0x24;
-    pub const HALT:  u16 = 0x25;
-}
-
-const MEM_SIZE:usize = 1 + std::u16::MAX as usize;
-
-mod ISA {
-    use super::op;
-
-    fn regf(reg: u16, start_bit: u16) -> u16 {
-        (reg & 0b111) << start_bit
-    }
-
-    fn opc(op: u16) -> u16 {
-        op >> 12
-    }
-
-    pub fn add(dr: u16, sr1: u16, sr2: u16) -> u16 {
-        opc(op::ADD) | regf(dr, 9) | regf(sr1, 6) | (1 << 5) | sr2 & 0b111
-    }
-
-    pub fn addi(dr: u16, sr1: u16, imm5: u16) -> u16 {
-        opc(op::ADD) | regf(dr, 9) | regf(sr1, 6) | imm5 & 0x1F
-    }
-
-    pub fn and(dr: u16, sr1: u16, sr2: u16) -> u16 {
-        opc(op::AND) | regf(dr, 9) | regf(sr1, 6) | (1 << 5) | sr2 & 0b111
-    }
-
-    pub fn andi(dr: u16, sr1: u16, imm5: u16) -> u16 {
-        opc(op::AND) | regf(dr, 9) | regf(sr1, 6) | imm5 & 0x1F
-    }
-
-    pub fn lea(dr:u16, off9: u16) -> u16 {
-        opc(op::LEA) | regf(dr, 9) | off9 & 0x1FF
-    }
-
-    pub fn ld(dr:u16, off9:u16) -> u16 {
-        opc(op::LD) | regf(dr, 9) | off9 & 0x1FF
-    }
-}
-
-mod Programs {
-    use super::ISA::*;
-    use super::Reg::*;
-    fn example_program() {
-        let _ = [
-            lea(  R0, 0),
-            add(  R1, R0, R2),
-            andi( R1, R0, 7),
-            and(  R0, R0, 0), // clear R0
-            ld(   R0, 0xFFFF),
-        ];
-    }
-}
-
-
-fn bits(word: u16, start: u16, len: u32) -> u16 {
-    let mask = 2u16.pow(len) - 1;
-    mask & (word >> start)
-}
-
-
-fn bit(word:u16, n:u16) -> u16 {
-    bits(word, n, 1)
-}
-
-fn sign_extend(word: u16, bitlen: u16) -> u16 {
-    let msb = bits(word, bitlen - 1, 1);
-    match msb {
-        0 => word,
-
-        _ =>  {
-            let mask = 0xFFFF << bitlen;
-            word | mask
-        }
-    }
-}
-
-fn sextbits(word:u16, start:u16, len:u16) -> u16 {
-    sign_extend(bits(word, start, len as u32), len)
-}
 
 pub struct LC3Vm {
     mem:     [Word; MEM_SIZE],
@@ -535,4 +411,129 @@ impl Kbd {
     pub fn getch_timeout(&mut self, timeout: u64) -> Result<u8, mpsc::RecvTimeoutError> {
         self.rx.recv_timeout(std::time::Duration::from_millis(timeout))
     }
+}
+type Word = Wrapping<u16>;
+
+pub mod op {
+    pub const BR:   u16 = 0x0;  // branch
+    pub const ADD:  u16 = 0x1;  // add
+    pub const LD:   u16 = 0x2;  // load
+    pub const ST:   u16 = 0x3;  // store
+    pub const JSR:  u16 = 0x4;  // jump register
+    pub const AND:  u16 = 0x5;  // bitwise and
+    pub const LDR:  u16 = 0x6;  // load register
+    pub const STR:  u16 = 0x7;  // store register
+    pub const RTI:  u16 = 0x8;  // unused
+    pub const NOT:  u16 = 0x9;  // bitwise not
+    pub const LDI:  u16 = 0xA;  // load indirect
+    pub const STI:  u16 = 0xB;  // store indirect
+    pub const JMP:  u16 = 0xC;  // jump
+    pub const RES:  u16 = 0xD;  // reserved (unused)
+    pub const LEA:  u16 = 0xE;  // load effective address
+    pub const TRAP: u16 = 0xF;  // trap
+}
+
+mod Reg {
+    pub const R0: u16 = 0;
+    pub const R1: u16 = 1;
+    pub const R2: u16 = 2;
+    pub const R3: u16 = 3;
+    pub const R4: u16 = 4;
+    pub const R5: u16 = 5;
+    pub const R6: u16 = 6;
+    pub const R7: u16 = 7;
+}
+
+mod Flg {
+    pub const POS: u16 = 1;
+    pub const ZRO: u16 = 2;
+    pub const NEG: u16 = 4;
+}
+
+mod Trap {
+    pub const GETC:  u16 = 0x20;
+    pub const OUT:   u16 = 0x21;
+    pub const PUTS:  u16 = 0x22;
+    pub const IN:    u16 = 0x23;
+    pub const PUTSP: u16 = 0x24;
+    pub const HALT:  u16 = 0x25;
+}
+
+const MEM_SIZE:usize = 1 + std::u16::MAX as usize;
+
+mod ISA {
+    use super::op;
+
+    fn regf(reg: u16, start_bit: u16) -> u16 {
+        (reg & 0b111) << start_bit
+    }
+
+    fn opc(op: u16) -> u16 {
+        op >> 12
+    }
+
+    pub fn add(dr: u16, sr1: u16, sr2: u16) -> u16 {
+        opc(op::ADD) | regf(dr, 9) | regf(sr1, 6) | (1 << 5) | sr2 & 0b111
+    }
+
+    pub fn addi(dr: u16, sr1: u16, imm5: u16) -> u16 {
+        opc(op::ADD) | regf(dr, 9) | regf(sr1, 6) | imm5 & 0x1F
+    }
+
+    pub fn and(dr: u16, sr1: u16, sr2: u16) -> u16 {
+        opc(op::AND) | regf(dr, 9) | regf(sr1, 6) | (1 << 5) | sr2 & 0b111
+    }
+
+    pub fn andi(dr: u16, sr1: u16, imm5: u16) -> u16 {
+        opc(op::AND) | regf(dr, 9) | regf(sr1, 6) | imm5 & 0x1F
+    }
+
+    pub fn lea(dr:u16, off9: u16) -> u16 {
+        opc(op::LEA) | regf(dr, 9) | off9 & 0x1FF
+    }
+
+    pub fn ld(dr:u16, off9:u16) -> u16 {
+        opc(op::LD) | regf(dr, 9) | off9 & 0x1FF
+    }
+}
+
+mod Programs {
+    use super::ISA::*;
+    use super::Reg::*;
+    fn example_program() {
+        let _ = [
+            lea(  R0, 0),
+            add(  R1, R0, R2),
+            andi( R1, R0, 7),
+            and(  R0, R0, 0), // clear R0
+            ld(   R0, 0xFFFF),
+        ];
+    }
+}
+
+
+fn bits(word: u16, start: u16, len: u32) -> u16 {
+    let mask = 2u16.pow(len) - 1;
+    mask & (word >> start)
+}
+
+
+fn bit(word:u16, n:u16) -> u16 {
+    bits(word, n, 1)
+}
+
+fn sign_extend(word: u16, bitlen: u16) -> u16 {
+    let msb = bits(word, bitlen - 1, 1);
+    match msb {
+        0 => word,
+
+        _ =>  {
+            let mask = 0xFFFF << bitlen;
+            word | mask
+        }
+    }
+}
+
+fn sextbits(word:u16, start:u16, len:u16) -> u16 {
+    sign_extend(bits(word, start, len as u32), len)
 }
