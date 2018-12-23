@@ -5,5 +5,7 @@ authors = ["Alessandro Piras <laynor@gmail.com>"]
 edition = "2018"
 
 [dependencies]
-ncurses = "5.97.0"
+getch = "0.2.0"
 byteorder = "1"
+nix = "*"
+ctrlc = "*"

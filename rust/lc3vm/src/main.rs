@@ -1,18 +1,28 @@
+extern crate ctrlc;
+
 mod lc3;
 
 fn main() {
-    ncurses::initscr();
+    let mut vm = lc3::LC3Vm::new();
 
-    let vm = lc3::LC3Vm::new();
+    let mut args = std::env::args();
+    let filename = args.skip(1).next();
+    let mut foo = false;
+    let c = std::cell::Cell::new(false);
 
 
-    let foo = Ok(12);
-    let bar = Some(12);
-    match std::io::stdin()
-        .bytes()
-        .next()
-        .and_then(|foo| foo.ok())
-        .unwrap();
+    ctrlc::set_handler( move || {
+        c.set(true);
+    });
 
-    ncurses::endwin();
+    match filename {
+        None => {
+            println!("USAGE: lc3vm imagefile.obj");
+        },
+        Some(fname) => {
+            vm.load_image_file(&fname);
+            vm.run();
+        }
+    }
+    // ncurses::endwin();
 }

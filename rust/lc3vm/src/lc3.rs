@@ -1,3 +1,12 @@
+extern crate nix;
+
+use nix::sys::termios;
+use std::thread;
+use std::sync::mpsc;
+use std::num::Wrapping;
+
+type Word = Wrapping<u16>;
+
 pub mod op {
     pub const BR:   u16 = 0x0;  // branch
     pub const ADD:  u16 = 0x1;  // add
@@ -44,14 +53,6 @@ mod Trap {
 }
 
 const MEM_SIZE:usize = 1 + std::u16::MAX as usize;
-
-pub struct LC3Vm {
-    mem:     [u16; MEM_SIZE],
-    reg:     [u16; 8],
-    pc:      u16,
-    cnd:     u16,
-    running: bool,
-}
 
 mod ISA {
     use super::op;
@@ -130,6 +131,15 @@ fn sextbits(word:u16, start:u16, len:u16) -> u16 {
     sign_extend(bits(word, start, len as u32), len)
 }
 
+pub struct LC3Vm {
+    mem:     [Word; MEM_SIZE],
+    reg:     [Word; 8],
+    pc:      Word,
+    cnd:     u16,
+    running: bool,
+    kbd:     Kbd
+}
+
 impl LC3Vm {
     const PC_START: u16 = 0x3000;
     const MMIO_START:usize = 0xFE00;
@@ -138,197 +148,219 @@ impl LC3Vm {
 
     pub fn new() -> LC3Vm {
         LC3Vm {
-            mem:     [0; MEM_SIZE],
-            reg:     [0; 8],
-            pc:      0,
+            mem:     [Wrapping(0); MEM_SIZE],
+            reg:     [Wrapping(0); 8],
+            pc:      Wrapping(0),
             cnd:     0,
             running: false,
+            kbd:     Kbd::new()
         }
     }
 
-    fn run(&mut self) {
-        self.pc = LC3Vm::PC_START;
+    pub fn run(&mut self) {
+        self.pc = Wrapping(LC3Vm::PC_START);
+        self.running = true;
         while self.running {
             self.step()
         }
     }
 
     fn step(&mut self) {
-        let instr_word = self.mem[self.pc as usize];
-        let op         = bits(instr_word, 11, 4);
-        let args       = bits(instr_word, 0, 12);
+        let instr_word = self.mem[self.pc.0 as usize];
+        let op         = bits(instr_word.0, 12, 4);
+        self.pc += Wrapping(1);
 
         match op {
-            op::BR   => self.br(args),
-            op::ADD  => self.add(args),
-            op::LD   => self.ld(args),
-            op::ST   => self.st(args),
-            op::JSR  => self.jsr(args),
-            op::AND  => self.and(args),
-            op::LDR  => self.ldr(args),
-            op::STR  => self.str(args),
-            op::RTI  => self.rti(args),
-            op::NOT  => self.not(args),
-            op::LDI  => self.ldi(args),
-            op::STI  => self.sti(args),
-            op::JMP  => self.jmp(args),
-            op::RES  => self.res(args),
-            op::LEA  => self.lea(args),
-            op::TRAP => self.trap(args),
+            op::BR   => self.br(instr_word),
+            op::ADD  => self.add(instr_word),
+            op::LD   => self.ld(instr_word),
+            op::ST   => self.st(instr_word),
+            op::JSR  => self.jsr(instr_word),
+            op::AND  => self.and(instr_word),
+            op::LDR  => self.ldr(instr_word),
+            op::STR  => self.str(instr_word),
+            op::RTI  => self.rti(instr_word),
+            op::NOT  => self.not(instr_word),
+            op::LDI  => self.ldi(instr_word),
+            op::STI  => self.sti(instr_word),
+            op::JMP  => self.jmp(instr_word),
+            op::RES  => self.res(instr_word),
+            op::LEA  => self.lea(instr_word),
+            op::TRAP => self.trap(instr_word),
             _ => panic!("Impossible opcode!")
         }
     }
 
 
     // Instructions
-    fn add_and(&mut self, args: u16, op: fn(u16, u16) -> u16) {
-        let dr   = bits(args, 9, 3) as usize;
-        let sr1  = bits(args, 6, 3) as usize;
-        let mode = bit(args, 5);
+    fn add_and(&mut self, args: Word, op: fn(Word, Word) -> Word) {
+        let dr   = bits(args.0, 9, 3) as usize;
+        let sr1  = bits(args.0, 6, 3) as usize;
+        let mode = bit(args.0, 5);
         let op2  = match mode {
-            0 => self.reg[bits(args, 0, 3) as usize],
-            _ => sextbits(args, 0, 5),
+            0 => self.reg[bits(args.0, 0, 3) as usize],
+            _ => Wrapping(sextbits(args.0, 0, 5)),
         };
 
         self.reg[dr] = op(self.reg[sr1], op2);
 
-        self.update_flags(self.reg[dr]);
+        self.cnd = self.update_flags(self.reg[dr]);
     }
 
-    fn br(&mut self, args:u16) {
-        // TODO
-        let nzp = bits(args, 9, 3);
+    fn br(&mut self, args:Word) {
+        let nzp = bits(args.0, 9, 3);
 
+        // println!("nzp={} cnd={}", nzp, self.cnd);
         if nzp & self.cnd != 0 {
-            self.pc += sextbits(args, 0, 9);
+            self.pc += Wrapping(sextbits(args.0, 0, 9));
+            // println!("branching!");
+        } else {
+            // println!("passing");
         }
     }
 
 
-    fn add(&mut self, args: u16) {
+    fn add(&mut self, args: Word) {
         self.add_and(args, |x, y| x + y);
     }
 
-    fn ld(&mut self, args: u16) {
-        let dr   = bits(args, 9, 3) as usize;
-        let off9 = sextbits(args, 0, 9);
+    fn ld(&mut self, args: Word) {
+        let dr   = bits(args.0, 9, 3) as usize;
+        let off9 = Wrapping(sextbits(args.0, 0, 9));
 
-        let addr = self.mem_read(self.pc + off9);
-        let val  = self.mem_read(addr);
+        let addr = self.pc + off9;
+        let val  = self.mem_read(addr.0);
 
         self.reg[dr] = val;
-        self.update_flags(val);
+        self.cnd = self.update_flags(val);
     }
 
-    fn st(&mut self, args: u16) {
-        let dr   = bits(args, 9, 3) as usize;
-        let off9 = sextbits(args, 0, 9);
+    fn st(&mut self, args: Word) {
+        let dr   = bits(args.0, 9, 3) as usize;
+        let off9 = Wrapping(sextbits(args.0, 0, 9));
         let val  = self.reg[dr];
 
-        self.mem_write(self.pc + off9, val);
+        self.mem_write((self.pc + off9).0, val.0);
     }
 
-    fn jsr(&mut self, args: u16) {
-        let mode = bit(args, 11);
+    fn jsr(&mut self, args: Word) {
+        let mode = bit(args.0, 11);
 
         self.reg[7] = self.pc;
 
         self.pc = match mode {
-            0 => self.reg[bits(args, 6, 3) as usize],
-            _ => self.pc + sextbits(args, 0, 11)
+            0 => self.reg[bits(args.0, 6, 3) as usize],
+            _ => self.pc + Wrapping(sextbits(args.0, 0, 11))
         }
 
     }
 
-    fn and(&mut self, args: u16) {
+    fn and(&mut self, args: Word) {
         self.add_and(args, { |x,y| x & y });
     }
 
-    fn ldr(&mut self, args: u16) {
-        let dr = bits(args, 9, 3) as usize;
-        let br = bits(args, 6, 3) as usize;
-        let off6 = sextbits(args, 0, 6);
+    fn ldr(&mut self, args: Word) {
+        let dr = bits(args.0, 9, 3) as usize;
+        let br = bits(args.0, 6, 3) as usize;
+        let off6 = Wrapping(sextbits(args.0, 0, 6));
 
-        self.reg[dr] = self.mem_read(self.reg[br] + off6);
+        self.reg[dr] = self.mem_read((self.reg[br] + off6).0);
+        self.cnd = self.update_flags(self.reg[dr])
     }
 
-    fn str(&mut self, args: u16) {
-        let sr = bits(args, 9, 3) as usize;
-        let br = bits(args, 6, 3) as usize;
-        let off6 = sextbits(args, 0, 6);
-        self.mem_write(self.reg[br] + off6, self.reg[sr]);
+    fn str(&mut self, args: Word) {
+        let sr = bits(args.0, 9, 3) as usize;
+        let br = bits(args.0, 6, 3) as usize;
+        let off6 = Wrapping(sextbits(args.0, 0, 6));
+        self.mem_write((self.reg[br] + off6).0, self.reg[sr].0);
     }
 
-    fn rti(&mut self, args: u16) {
+    fn rti(&mut self, args: Word) {
         panic!("RTI called from non trap contexst");
     }
 
-    fn not(&mut self, args: u16) {
-        let dr = bits(args, 9, 3) as usize;
-        let sr = bits(args, 6, 3) as usize;
+    fn not(&mut self, args: Word) {
+        let dr = bits(args.0, 9, 3) as usize;
+        let sr = bits(args.0, 6, 3) as usize;
 
-        self.reg[dr] = !self.reg[sr];
-    }
-
-    fn ldi(&mut self, args: u16) {
-        let dr   = bits(args, 9, 3) as usize;
-        let off9 = bits(args, 0, 9);
-        let addr = self.mem_read(self.pc + off9);
-        let val  = self.mem_read(addr);
+        let val = !self.reg[sr];
         self.reg[dr] = val;
-        self.update_flags(val);
+        self.cnd = self.update_flags(val);
     }
 
-    fn sti(&mut self, args: u16) {
-        let sr   = bits(args, 9, 3) as usize;
-        let off9 = bits(args, 0, 9);
-        let addr = self.mem_read(self.pc + off9);
-        self.mem_write(addr, self.reg[sr]);
+    fn ldi(&mut self, args: Word) {
+        let dr   = bits(args.0, 9, 3) as usize;
+        let off9 = Wrapping(sextbits(args.0, 0, 9));
+        let addr = self.mem_read((self.pc + off9).0);
+        let val  = self.mem_read(addr.0);
+        self.reg[dr] = val;
+        self.cnd = self.update_flags(val);
     }
 
-    fn jmp(&mut self, args: u16) {
-        let br = bits(args, 6, 3) as usize;
+    fn sti(&mut self, args: Word) {
+        let sr   = bits(args.0, 9, 3) as usize;
+        let off9 = Wrapping(sextbits(args.0, 0, 9));
+        let addr = self.mem_read((self.pc + off9).0);
+        self.mem_write(addr.0, self.reg[sr].0);
+    }
+
+    fn jmp(&mut self, args: Word) {
+        let br = bits(args.0, 6, 3) as usize;
         self.pc = self.reg[br]
     }
 
-    fn res(&mut self, args: u16) {
+    fn res(&mut self, args: Word) {
         panic!("Invalid opcode")
     }
 
-    fn lea(&mut self, args: u16) {
-        let dr = bits(args, 9, 3);
-        self.reg[dr as usize] = self.pc;
+    fn lea(&mut self, args: Word) {
+        let dr = bits(args.0, 9, 3);
+        let off9 = Wrapping(sextbits(args.0, 0, 9));
+
+        let val = self.pc + off9;
+        self.reg[dr as usize] = val;
+        self.cnd = self.update_flags(val)
     }
 
-    fn trap(&mut self, args: u16) {
-        let trapv8 = bits(args, 0, 8);
+    fn trap(&mut self, args: Word) {
+        let trapv8 = bits(args.0, 0, 8);
         match trapv8 {
             Trap::GETC  => self.trap_getc(),
             Trap::OUT   => self.trap_out(),
             Trap::IN    => self.trap_in(),
             Trap::PUTS  => self.trap_puts(),
             Trap::PUTSP => self.trap_putsp(),
+            Trap::HALT  => self.trap_halt(),
             _           => panic!("unknown trapvector")
         }
     }
 
     // traps
 
+    fn initialize_kbd(&mut self) {
+        use nix::sys::termios;
+        use std::io::Read;
+        let term_orig = termios::tcgetattr(0).unwrap();
+        let mut term = termios::tcgetattr(0).unwrap();
+        term.local_flags.remove(termios::LocalFlags::ICANON);
+        term.local_flags.remove(termios::LocalFlags::ISIG);
+        term.local_flags.remove(termios::LocalFlags::ECHO);
+        termios::tcsetattr(0, termios::SetArg::TCSADRAIN, &term).unwrap();
+    }
+
+    fn getch() {
+    }
+
     fn trap_getc(&mut self) {
-        let ch = ncurses::getch();
-        match ch {
-            -1 => panic!("error reading char"),
-            _  => {
-                self.reg[0] = ch as u8 as u16;
-            }
-        }
+        let ch = self.kbd.getch();
+        self.reg[0].0 = ch as u16;
     }
 
     fn trap_out(&mut self) {
         use std::io::Write;
-        let ascii = self.reg[0] as u8 as char;
+        let ascii = self.reg[0].0 as u8 as char;
         print!("{}", ascii);
-        std::io::stdout().flush();
+        std::io::stdout().flush().ok();
     }
 
     fn trap_in(&mut self) {
@@ -338,53 +370,78 @@ impl LC3Vm {
 
     fn trap_puts(&mut self) {
         use std::io::Write;
+        let baseaddr = self.reg[0].0 as usize;
 
-        let i = self.reg[0] as usize;
-        while self.mem[i] &0xFF != 0 {
-            print!("{}", self.mem[i] as u8 as char);
-        }
+        let charv: Vec<char> = self.mem[baseaddr..]
+            .iter()
+            .take_while(|w| ((**w).0 & 0xFF) != 0)
+            .map(|w| (*w).0 as u8 as char)
+            .collect();
+
+        let s: String = charv
+            .into_iter()
+            .collect();
+
+        print!("{}", s);
         std::io::stdout().flush().ok();
     }
 
     fn trap_putsp(&mut self) {
         use std::io::Write;
+        let baseaddr = self.reg[0].0 as usize;
 
-        let i = self.reg[0] as usize;
-        loop {
-            let ch1 = self.mem[i] >> 8;
-            match ch1 {
-                0  => break,
-                ch => {
-                    print!("{}", ch);
-                }
-            }
+        let s:String = self.mem[baseaddr..].into_iter()
+            .take_while(|w| (**w).0 != 0u16)
+            .flat_map(|w| {
+                let c1 = (w.0 & 0xFF) as u8 as char;
+                let c2 = (w.0 >> 8)   as u8 as char;
+                vec![c1, c2]
+            })
+            .collect();
 
-            let ch2 = self.mem[i] & 0xFF;
-            match ch2 {
-                0 => break,
-                ch => {
-                    print!("{}", ch);
-                }
-            }
-
-            print!("{}", self.mem[i] as u8 as char);
-        }
+        print!("{}", s);
         std::io::stdout().flush().ok();
     }
 
-    fn update_flags(&mut self, val: u16) -> u16 {
+    fn trap_halt(&mut self) {
+       self.running = false;
+    }
+
+    fn update_flags(&self, val: Wrapping<u16>) -> u16 {
         match val {
-            0          => Flg::ZRO,
-            n if n > 0 => Flg::POS,
-            _          => Flg::NEG
+            Wrapping(0)          => Flg::ZRO,
+            Wrapping(n) if n > 0 => Flg::POS,
+            _                    => Flg::NEG
         }
     }
 
-    fn update_kbd(&mut self) {
-        // TODO: check input buffer, fill 0xFE01 with char, 0xFE00 with 1 if input buffer not empty
+    fn kbd_thread(&mut self) {
+        while self.running {
+            // let c = getch();
+            let c = 0;
+
+            // lock memory
+            self.mem[LC3Vm::MMIO_KBDSR as usize] = Wrapping(1 << 15);
+            self.mem[LC3Vm::MMIO_KBDDR as usize] = Wrapping(c as u8 as u16);
+            // unlock
+        }
+
     }
 
-    // Memory and MMIO
+    fn update_kbd(&mut self) {
+        let char = self.kbd.getch_timeout(0);
+        match char {
+            Ok(b) => {
+                self.mem[LC3Vm::MMIO_KBDSR as usize] = Wrapping(1 << 15);
+                self.mem[LC3Vm::MMIO_KBDDR as usize] = Wrapping(b as u16);
+            },
+            Err(_e) => {
+                self.mem[LC3Vm::MMIO_KBDSR as usize] = Wrapping(0);
+            },
+        }
+    }
+
+    // Memory and MMIO.0
     fn mmio(&mut self, addr:u16) {
         match addr {
             0xFE00 => self.update_kbd(),
@@ -392,8 +449,8 @@ impl LC3Vm {
         }
     }
 
-    fn mem_read(&mut self, addr:u16) -> u16 {
-        if addr > 0xFE00 {
+    fn mem_read(&mut self, addr:u16) -> Wrapping<u16> {
+        if addr >= 0xFE00 {
             self.mmio(addr)
         }
 
@@ -401,24 +458,81 @@ impl LC3Vm {
     }
 
     fn mem_write(&mut self, addr:u16, value:u16) {
-        self.mem[addr as usize] = value;
+        self.mem[addr as usize] = Wrapping(value);
     }
 
-    fn load_image_file(&mut self, path:&str) {
+    pub fn load_image_file(&mut self, path:&str) {
         use byteorder::{BigEndian, ReadBytesExt};
-        use std::io::Read;
         let f = std::fs::File::open(path).ok().unwrap();
 
         let mut rd = std::io::BufReader::new(f);
 
-        let size = rd.read_u16::<BigEndian>().ok().unwrap() as usize;
+        let origin = rd.read_u16::<BigEndian>().ok().unwrap();
 
-        for i in 0..(size - 1) {
-            let word = rd.read_u16::<BigEndian>();
-            match word {
-                Err(e) => break,
-                Ok(w)  => {self.mem[LC3Vm::PC_START as usize + i] = w;},
+        println!("Loading file {} @ x{:04X}\r", path, origin);
+
+        for addr in origin..std::u16::MAX {
+            match rd.read_u16::<BigEndian>() {
+                Ok(w)  => {
+                    println!("x{:04X} {:04X}\r", addr, w);
+                    self.mem[addr as usize] = Wrapping(w);
+                },
+                Err(_e) => {
+                    break;
+                },
             }
         }
+    }
+    pub fn debug(&mut self) {
+
+    }
+}
+
+struct Kbd {
+    rx:mpsc::Receiver<u8>
+}
+
+impl Kbd {
+
+    pub fn new() -> Kbd {
+        let (tx, rx) = mpsc::channel();
+
+        thread::spawn(move ||{
+            loop {
+                let b = Kbd::do_getch();
+                tx.send(b).ok();
+            }
+        });
+
+        Kbd {
+            rx: rx
+        }
+    }
+
+    fn do_getch() -> u8 {
+        use std::io::Read;
+        // Querying original as a separate, since `Termios` does not implement copy
+        let orig_term = termios::tcgetattr(0).unwrap();
+        let mut term = termios::tcgetattr(0).unwrap();
+        // Unset canonical mode, so we get characters immediately
+        term.local_flags.remove(termios::LocalFlags::ICANON);
+        // Don't generate signals on Ctrl-C and friends
+        // term.local_flags.remove(termios::LocalFlags::ISIG);
+        // Disable local echo
+        term.local_flags.remove(termios::LocalFlags::ECHO);
+        termios::tcsetattr(0, termios::SetArg::TCSADRAIN, &term).unwrap();
+
+        let byte = std::io::stdin().bytes().next().unwrap().ok().unwrap();
+
+        termios::tcsetattr(0, termios::SetArg::TCSADRAIN, &orig_term).unwrap();
+        byte
+    }
+
+    pub fn getch(&mut self) -> u8 {
+        self.rx.recv().ok().unwrap()
+    }
+
+    pub fn getch_timeout(&mut self, timeout: u64) -> Result<u8, mpsc::RecvTimeoutError> {
+        self.rx.recv_timeout(std::time::Duration::from_millis(timeout))
     }
 }
