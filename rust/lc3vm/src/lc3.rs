@@ -215,7 +215,6 @@ impl LC3Vm {
 
     fn initialize_kbd(&mut self) {
         use nix::sys::termios;
-        use std::io::Read;
         let term_orig = termios::tcgetattr(0).unwrap();
         let mut term = termios::tcgetattr(0).unwrap();
         term.local_flags.remove(termios::LocalFlags::ICANON);
