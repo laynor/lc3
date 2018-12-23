@@ -232,7 +232,9 @@ module Vm
 
     def trap_getc
       res = STDIN.noecho { |si| si.raw &.read_char }
-      unless res.nil?
+      if res.nil?
+        @reg[0] = 0
+      else
         @reg[0] = res.ord.to_u16
       end
     end
@@ -371,13 +373,12 @@ module Vm
 
     def read_image_file(path)
       File.open(path) do |f|
-        i = PC_START
-        size = f.read_bytes(UInt16, IO::ByteFormat::BigEndian)
-
+        origin = f.read_bytes(UInt16, IO::ByteFormat::BigEndian)
+        addr = origin
         begin
           while true
-            @mem[i] = f.read_bytes(UInt16, IO::ByteFormat::BigEndian)
-            i += 1
+            @mem[addr] = f.read_bytes(UInt16, IO::ByteFormat::BigEndian)
+            addr += 1
           end
         rescue
         end
