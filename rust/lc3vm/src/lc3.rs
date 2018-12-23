@@ -319,13 +319,13 @@ impl LC3Vm {
     // Memory and MMIO.0
     fn mmio(&mut self, addr:u16) {
         match addr {
-            0xFE00 => self.update_kbd(),
+            n if n == LC3Vm::MMIO_KBDSR as u16 => self.update_kbd(),
             _      => ()
         }
     }
 
     fn mem_read(&mut self, addr:u16) -> Wrapping<u16> {
-        if addr >= 0xFE00 {
+        if addr >= LC3Vm::MMIO_START as u16 {
             self.mmio(addr)
         }
 
