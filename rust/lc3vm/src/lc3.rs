@@ -1,10 +1,12 @@
 extern crate nix;
+extern crate rustyline;
 
-use nix::sys::termios;
-use std::thread;
-use std::sync::mpsc;
 use std::num::Wrapping;
-
+use std::sync::Arc;
+// use std::sync::atomic;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
+use crate::kbd;
 
 
 pub struct LC3Vm {
@@ -13,7 +15,8 @@ pub struct LC3Vm {
     pc:      Word,
     cnd:     u16,
     running: bool,
-    kbd:     Kbd
+    debug:   Arc<AtomicBool>,
+    rl:      rustyline::Editor<()>,
 }
 
 impl LC3Vm {
@@ -29,7 +32,8 @@ impl LC3Vm {
             pc:      Wrapping(0),
             cnd:     0,
             running: false,
-            kbd:     Kbd::new()
+            debug:   Arc::new(AtomicBool::new(false)),
+            rl:      rustyline::Editor::new(),
         }
     }
 
@@ -37,9 +41,13 @@ impl LC3Vm {
         self.pc = Wrapping(LC3Vm::PC_START);
         self.running = true;
         while self.running {
-            self.step()
+            self.step();
+            if self.debug.load(Ordering::Relaxed) {
+                self.debug_prompt();
+            }
         }
     }
+
 
     fn step(&mut self) {
         let instr_word = self.mem[self.pc.0 as usize];
@@ -86,12 +94,8 @@ impl LC3Vm {
     fn br(&mut self, args:Word) {
         let nzp = bits(args.0, 9, 3);
 
-        // println!("nzp={} cnd={}", nzp, self.cnd);
         if nzp & self.cnd != 0 {
             self.pc += Wrapping(sextbits(args.0, 0, 9));
-            // println!("branching!");
-        } else {
-            // println!("passing");
         }
     }
 
@@ -151,7 +155,7 @@ impl LC3Vm {
         self.mem_write((self.reg[br] + off6).0, self.reg[sr].0);
     }
 
-    fn rti(&mut self, args: Word) {
+    fn rti(&mut self, _args: Word) {
         panic!("RTI called from non trap contexst");
     }
 
@@ -185,7 +189,7 @@ impl LC3Vm {
         self.pc = self.reg[br]
     }
 
-    fn res(&mut self, args: Word) {
+    fn res(&mut self, _args: Word) {
         panic!("Invalid opcode")
     }
 
@@ -201,34 +205,21 @@ impl LC3Vm {
     fn trap(&mut self, args: Word) {
         let trapv8 = bits(args.0, 0, 8);
         match trapv8 {
-            Trap::GETC  => self.trap_getc(),
-            Trap::OUT   => self.trap_out(),
-            Trap::IN    => self.trap_in(),
-            Trap::PUTS  => self.trap_puts(),
-            Trap::PUTSP => self.trap_putsp(),
-            Trap::HALT  => self.trap_halt(),
+            trap::GETC  => self.trap_getc(),
+            trap::OUT   => self.trap_out(),
+            trap::IN    => self.trap_in(),
+            trap::PUTS  => self.trap_puts(),
+            trap::PUTSP => self.trap_putsp(),
+            trap::HALT  => self.trap_halt(),
             _           => panic!("unknown trapvector")
         }
     }
 
     // traps
-
-    fn initialize_kbd(&mut self) {
-        use nix::sys::termios;
-        let term_orig = termios::tcgetattr(0).unwrap();
-        let mut term = termios::tcgetattr(0).unwrap();
-        term.local_flags.remove(termios::LocalFlags::ICANON);
-        term.local_flags.remove(termios::LocalFlags::ISIG);
-        term.local_flags.remove(termios::LocalFlags::ECHO);
-        termios::tcsetattr(0, termios::SetArg::TCSADRAIN, &term).unwrap();
-    }
-
-    fn getch() {
-    }
-
     fn trap_getc(&mut self) {
-        let ch = self.kbd.getch();
+        let ch = kbd::getch();
         self.reg[0].0 = ch as u16;
+        self.update_flags(self.reg[0]);
     }
 
     fn trap_out(&mut self) {
@@ -284,43 +275,28 @@ impl LC3Vm {
 
     fn update_flags(&self, val: Wrapping<u16>) -> u16 {
         match val {
-            Wrapping(0)          => Flg::ZRO,
-            Wrapping(n) if n > 0 => Flg::POS,
-            _                    => Flg::NEG
+            Wrapping(0)                    => flags::ZRO,
+            Wrapping(n) if bit(n, 15) == 0 => flags::POS,
+            _                              => flags::NEG
         }
-    }
-
-    fn kbd_thread(&mut self) {
-        while self.running {
-            // let c = getch();
-            let c = 0;
-
-            // lock memory
-            self.mem[LC3Vm::MMIO_KBDSR as usize] = Wrapping(1 << 15);
-            self.mem[LC3Vm::MMIO_KBDDR as usize] = Wrapping(c as u8 as u16);
-            // unlock
-        }
-
     }
 
     fn update_kbd(&mut self) {
-        let char = self.kbd.getch_timeout(0);
-        match char {
-            Ok(b) => {
-                self.mem[LC3Vm::MMIO_KBDSR as usize] = Wrapping(1 << 15);
-                self.mem[LC3Vm::MMIO_KBDDR as usize] = Wrapping(b as u16);
-            },
-            Err(_e) => {
-                self.mem[LC3Vm::MMIO_KBDSR as usize] = Wrapping(0);
-            },
+        if kbd::check_input() {
+            let b = kbd::getch();
+            self.mem[LC3Vm::MMIO_KBDSR] = Wrapping(1 << 15);
+            self.mem[LC3Vm::MMIO_KBDDR] = Wrapping(b as u16);
+        } else {
+            self.mem[LC3Vm::MMIO_KBDSR] = Wrapping(0);
         }
     }
 
     // Memory and MMIO.0
     fn mmio(&mut self, addr:u16) {
-        match addr {
-            n if n == LC3Vm::MMIO_KBDSR as u16 => self.update_kbd(),
-            _      => ()
+        match addr as usize {
+            LC3Vm::MMIO_KBDSR => self.update_kbd(),
+
+            _ => ()
         }
     }
 
@@ -338,7 +314,7 @@ impl LC3Vm {
 
     pub fn load_image_file(&mut self, path:&str) {
         use byteorder::{BigEndian, ReadBytesExt};
-        let f = std::fs::File::open(path).ok().unwrap();
+        let f = std::fs::File::open(path).expect("Could not open file");
 
         let mut rd = std::io::BufReader::new(f);
 
@@ -357,60 +333,63 @@ impl LC3Vm {
                 },
             }
         }
+        println!("{}", "-".repeat(80));
     }
-    pub fn debug(&mut self) {
 
+    // Debug
+
+    // pub fn toggle_debug(&self) -> () {
+    //     self.debug.fetch_or(true, Ordering::SeqCst);
+    // }
+
+
+    fn print_registers(&self) {
+        println!("{}", "-".repeat(80));
+        for i in 0..4 {
+            println!("R{} = x{:04x}    R{} = x{:04x}", i, self.reg[i], 4 + i, self.reg[4+i]);
+        }
+        println!("PC   = x{:04x}", self.pc );
+        println!("       nzp");
+        println!("COND = {:03b}", self.cnd );
     }
-}
 
-struct Kbd {
-    rx:mpsc::Receiver<u8>
-}
-
-impl Kbd {
-
-    pub fn new() -> Kbd {
-        let (tx, rx) = mpsc::channel();
-
-        thread::spawn(move ||{
-            loop {
-                let b = Kbd::do_getch();
-                tx.send(b).ok();
-            }
-        });
-
-        Kbd {
-            rx: rx
+    fn print_mem(&self) {
+        for i in (self.pc.0 - (10))..(self.pc.0 + 30) {
+            println!("{}  x{:04x} x{:04x}", if i == self.pc.0 { ">"} else { " "}, i, self.mem[i as usize % MEM_SIZE]);
         }
     }
 
-    fn do_getch() -> u8 {
-        use std::io::Read;
-        // Querying original as a separate, since `Termios` does not implement copy
-        let orig_term = termios::tcgetattr(0).unwrap();
-        let mut term = termios::tcgetattr(0).unwrap();
-        // Unset canonical mode, so we get characters immediately
-        term.local_flags.remove(termios::LocalFlags::ICANON);
-        // Don't generate signals on Ctrl-C and friends
-        // term.local_flags.remove(termios::LocalFlags::ISIG);
-        // Disable local echo
-        term.local_flags.remove(termios::LocalFlags::ECHO);
-        termios::tcsetattr(0, termios::SetArg::TCSADRAIN, &term).unwrap();
-
-        let byte = std::io::stdin().bytes().next().unwrap().ok().unwrap();
-
-        termios::tcsetattr(0, termios::SetArg::TCSADRAIN, &orig_term).unwrap();
-        byte
+    pub fn getdebug(&self) -> Arc<AtomicBool> {
+        self.debug.clone()
     }
 
-    pub fn getch(&mut self) -> u8 {
-        self.rx.recv().ok().unwrap()
+    pub fn debug_prompt(&mut self) {
+        println!("Debug");
+        loop {
+            let readline = self.rl.readline("lc3db> ");
+            match readline {
+                Ok(line) => {
+                    match line.as_ref() {
+                        "q" => std::process::exit(1),
+                        "c" => {
+                            self.debug.store(false, Ordering::SeqCst);
+                            break;
+                        },
+                        "n" => break,
+                        "p" => self.print_registers(),
+                        "pm" => self.print_mem(),
+                        _ => (),
+                    }
+                }
+                Err(e) => {
+                    println!("error {}", e);
+                }
+            }
+        }
     }
 
-    pub fn getch_timeout(&mut self, timeout: u64) -> Result<u8, mpsc::RecvTimeoutError> {
-        self.rx.recv_timeout(std::time::Duration::from_millis(timeout))
-    }
 }
+
 type Word = Wrapping<u16>;
 
 pub mod op {
@@ -432,7 +411,8 @@ pub mod op {
     pub const TRAP: u16 = 0xF;  // trap
 }
 
-mod Reg {
+#[allow(dead_code)]
+mod reg {
     pub const R0: u16 = 0;
     pub const R1: u16 = 1;
     pub const R2: u16 = 2;
@@ -443,13 +423,13 @@ mod Reg {
     pub const R7: u16 = 7;
 }
 
-mod Flg {
+mod flags {
     pub const POS: u16 = 1;
     pub const ZRO: u16 = 2;
     pub const NEG: u16 = 4;
 }
 
-mod Trap {
+mod trap {
     pub const GETC:  u16 = 0x20;
     pub const OUT:   u16 = 0x21;
     pub const PUTS:  u16 = 0x22;
@@ -460,7 +440,8 @@ mod Trap {
 
 const MEM_SIZE:usize = 1 + std::u16::MAX as usize;
 
-mod ISA {
+#[allow(dead_code)]
+mod isa {
     use super::op;
 
     fn regf(reg: u16, start_bit: u16) -> u16 {
@@ -468,23 +449,23 @@ mod ISA {
     }
 
     fn opc(op: u16) -> u16 {
-        op >> 12
+        op << 12
     }
 
     pub fn add(dr: u16, sr1: u16, sr2: u16) -> u16 {
-        opc(op::ADD) | regf(dr, 9) | regf(sr1, 6) | (1 << 5) | sr2 & 0b111
+        opc(op::ADD) | regf(dr, 9) | regf(sr1, 6)  | sr2 & 0b111
     }
 
     pub fn addi(dr: u16, sr1: u16, imm5: u16) -> u16 {
-        opc(op::ADD) | regf(dr, 9) | regf(sr1, 6) | imm5 & 0x1F
+        opc(op::ADD) | regf(dr, 9) | regf(sr1, 6) | (1 << 5) | imm5 & 0x1F
     }
 
     pub fn and(dr: u16, sr1: u16, sr2: u16) -> u16 {
-        opc(op::AND) | regf(dr, 9) | regf(sr1, 6) | (1 << 5) | sr2 & 0b111
+        opc(op::AND) | regf(dr, 9) | regf(sr1, 6)  | sr2 & 0b111
     }
 
     pub fn andi(dr: u16, sr1: u16, imm5: u16) -> u16 {
-        opc(op::AND) | regf(dr, 9) | regf(sr1, 6) | imm5 & 0x1F
+        opc(op::AND) | regf(dr, 9) | regf(sr1, 6) | (1 << 5) | imm5 & 0x1F
     }
 
     pub fn lea(dr:u16, off9: u16) -> u16 {
@@ -496,9 +477,10 @@ mod ISA {
     }
 }
 
-mod Programs {
-    use super::ISA::*;
-    use super::Reg::*;
+#[allow(dead_code)]
+mod programs {
+    use super::isa::*;
+    use super::reg::*;
     fn example_program() {
         let _ = [
             lea(  R0, 0),
@@ -535,4 +517,72 @@ fn sign_extend(word: u16, bitlen: u16) -> u16 {
 
 fn sextbits(word:u16, start:u16, len:u16) -> u16 {
     sign_extend(bits(word, start, len as u32), len)
+}
+
+#[cfg(test)]
+mod tests {
+
+    use crate::lc3::isa;
+    use std::num::Wrapping;
+    #[test]
+    fn add_immediate_works() {
+        let mut vm = crate::lc3::LC3Vm::new();
+        vm.mem[0x3000] = Wrapping(isa::addi(0, 0, -5i16 as u16));
+        vm.pc = Wrapping(0x3000);
+        vm.step();
+        assert_eq!(vm.reg[0], Wrapping(-5i16 as u16));
+        assert_eq!(vm.pc, Wrapping(0x3001));
+        assert_eq!(vm.cnd, 0b100);
+    }
+
+    #[test]
+    fn add_works() {
+        let mut vm = crate::lc3::LC3Vm::new();
+        vm.reg[0] = Wrapping(10);
+        vm.reg[1] = Wrapping(-1i16 as u16);
+        vm.mem[0x3000] = Wrapping(isa::add(2, 1, 0));
+        vm.pc = Wrapping(0x3000);
+        vm.step();
+        assert_eq!(vm.reg[2], Wrapping(9));
+        assert_eq!(vm.pc, Wrapping(0x3001));
+        assert_eq!(vm.cnd, 0b001);
+    }
+
+    #[test]
+    fn and_immediate_works() {
+        let mut vm = crate::lc3::LC3Vm::new();
+        vm.reg[0].0 = 0b1100011;
+        vm.mem[0x3000] = Wrapping(isa::andi(0, 0, 0b11));
+        vm.pc = Wrapping(0x3000);
+        vm.step();
+        assert_eq!(vm.reg[0], Wrapping(0b11));
+        assert_eq!(vm.pc, Wrapping(0x3001));
+        assert_eq!(vm.cnd, 0b001);
+    }
+
+    #[test]
+    fn and_works() {
+        let mut vm = crate::lc3::LC3Vm::new();
+        vm.reg[0].0 = 0b1011101;
+        vm.reg[1].0 = 0b1100011;
+        vm.mem[0x3000] = Wrapping(isa::and(2, 1, 0));
+        vm.pc = Wrapping(0x3000);
+        vm.step();
+        assert_eq!(vm.reg[2], Wrapping(0b1000001));
+        assert_eq!(vm.pc, Wrapping(0x3001));
+        assert_eq!(vm.cnd, 0b001);
+    }
+
+    #[test]
+    fn add_works2() {
+        let mut vm = crate::lc3::LC3Vm::new();
+        vm.reg[0].0 = 0x79;
+        vm.reg[1].0 = 0xFF87;
+        vm.mem[0x3000] = Wrapping(isa::add(2, 1, 0));
+        vm.pc = Wrapping(0x3000);
+        vm.step();
+        assert_eq!(vm.reg[2], Wrapping(0));
+        assert_eq!(vm.pc, Wrapping(0x3001));
+        assert_eq!(vm.cnd, 0b010);
+    }
 }
