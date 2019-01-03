@@ -1,7 +1,12 @@
+#[macro_use]
+extern crate nom;
 extern crate ctrlc;
 
 mod kbd;
 mod lc3;
+mod debugger;
+
+use std::env;
 
 fn main() {
     let mut vm = lc3::LC3Vm::new();
@@ -11,10 +16,14 @@ fn main() {
 
     let debug = vm.getdebug();
 
+    match env::var("DBG") {
+        Ok(_) => debug.store(true, std::sync::atomic::Ordering::SeqCst),
+        Err(_) => (),
+    }
 
     ctrlc::set_handler(move || {
         println!("debug");
-        debug.fetch_or(true, std::sync::atomic::Ordering::SeqCst);
+        debug.store(true, std::sync::atomic::Ordering::SeqCst);
     }).expect("Error setting ctrl+c handler");
 
 
@@ -27,5 +36,4 @@ fn main() {
             vm.run();
         }
     }
-    // ncurses::endwin();
 }

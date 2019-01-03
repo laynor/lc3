@@ -7,7 +7,10 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use crate::kbd;
+use crate::debugger::{ Command, Item };
+use crate::debugger;
 
+use std::collections::HashSet;
 
 pub struct LC3Vm {
     mem:     [Word; MEM_SIZE],
@@ -17,6 +20,7 @@ pub struct LC3Vm {
     running: bool,
     debug:   Arc<AtomicBool>,
     rl:      rustyline::Editor<()>,
+    bps:     HashSet<u16>,
 }
 
 impl LC3Vm {
@@ -34,6 +38,15 @@ impl LC3Vm {
             running: false,
             debug:   Arc::new(AtomicBool::new(false)),
             rl:      rustyline::Editor::new(),
+            bps:     HashSet::new(),
+        }
+    }
+
+    fn maybe_break(&self) {
+        if self.bps.contains(&self.pc.0) {
+            self.debug.store(true, Ordering::SeqCst);
+        } else {
+            println!("Skipping {:04x}", self.pc.0);
         }
     }
 
@@ -41,7 +54,10 @@ impl LC3Vm {
         self.pc = Wrapping(LC3Vm::PC_START);
         self.running = true;
         while self.running {
+            self.maybe_break();
+
             self.step();
+
             if self.debug.load(Ordering::Relaxed) {
                 self.debug_prompt();
             }
@@ -353,9 +369,34 @@ impl LC3Vm {
         println!("COND = {:03b}", self.cnd );
     }
 
-    fn print_mem(&self) {
-        for i in (self.pc.0 - (10))..(self.pc.0 + 30) {
-            println!("{}  x{:04x} x{:04x}", if i == self.pc.0 { ">"} else { " "}, i, self.mem[i as usize % MEM_SIZE]);
+    fn prnchar(ch:u8) -> char {
+        if "\n\t\0".contains(ch as char) {
+            '.'
+        } else if ch <= 31 || [0x7fu8].contains(&ch){
+            ' '
+        } else {
+            ch as char
+        }
+    }
+
+    fn print_mem(&self, before:Option<u16>, after:Option<u16>) {
+        let (bef, aft) = match before {
+            None => (self.pc - Wrapping(10), self.pc + Wrapping(20)),
+            Some(n) => match after {
+                None => (Wrapping(n) - Wrapping(10), Wrapping(n) + Wrapping(20)),
+                Some(m) => (Wrapping(n), Wrapping(m)),
+            }
+        };
+        println!("{}..{}", bef.0, aft.0);
+        for i in bef.0..aft.0 {
+            let iw = self.mem[i as usize % MEM_SIZE];
+            println!("{}  x{:04x} x{:04x} [{}{}]    {}",
+                     if (i + 1) == self.pc.0 {">"} else {" "},
+                     i,
+                     iw.0,
+                     LC3Vm::prnchar((iw.0 >> 8) as u8),
+                     LC3Vm::prnchar((iw.0 & 0xFF) as u8),
+                     isa::decode(iw.0));
         }
     }
 
@@ -364,21 +405,34 @@ impl LC3Vm {
     }
 
     pub fn debug_prompt(&mut self) {
-        println!("Debug");
+        self.print_mem(Some(self.pc.0 - 3), Some(self.pc.0 + 3));
         loop {
             let readline = self.rl.readline("lc3db> ");
             match readline {
                 Ok(line) => {
-                    match line.as_ref() {
-                        "q" => std::process::exit(1),
-                        "c" => {
-                            self.debug.store(false, Ordering::SeqCst);
-                            break;
+                    let input = format!("{}\n", line);
+                    let cmd = debugger::cmd(&input);
+                    match cmd {
+                        Ok((_, cmd)) => match cmd {
+                            Command::Break(addr) => self.add_breakpoint(addr),
+                            Command::Continue  => {
+                                self.debug.store(false, Ordering::SeqCst);
+                                break;
+                            },
+                            Command::List(from, to) => match (from, to) {
+                                (None, None) => self.print_mem(None, None),
+                                (Some(Item::Addr(a)), None) => self.print_mem(Some(a), None),
+                                (Some(Item::Addr(a)), Some(Item::Addr(b))) => self.print_mem(Some(a), Some(b)),
+                                _ => println!("Wrong arguments for List"),
+                            },
+                            Command::ListBreak => self.print_breakpoints(),
+                            Command::Next  => break,
+                            Command::Print(indirect, item)  => self.dbg_print(indirect, item),
+                            Command::Quit  => std::process::exit(1),
+                            Command::Status => self.dbg_print_status(),
+                            Command::PrintRegisters => self.print_registers(),
                         },
-                        "n" => break,
-                        "p" => self.print_registers(),
-                        "pm" => self.print_mem(),
-                        _ => (),
+                        Err(_e) => println!("Not a command.")
                     }
                 }
                 Err(e) => {
@@ -386,6 +440,40 @@ impl LC3Vm {
                 }
             }
         }
+    }
+
+    fn dbg_print(&self, indirect:bool, item:Item) {
+        let tmp = match item {
+            Item::Reg(n) => self.reg[n as usize],
+            Item::Addr(a) => self.mem[a as usize],
+        };
+        let val = if indirect {
+            self.mem[tmp.0 as usize].0
+        } else {
+            tmp.0
+        };
+        println!("{} => {:04x} ({:05})   {:016b}", item, val, val, val);
+    }
+
+    fn print_breakpoints(&self) {
+        if self.bps.is_empty() {
+            println!("No breakpoints.");
+        } else {
+            println!("Breakpoints:");
+            for (i, addr) in self.bps.iter().enumerate() {
+                println!("{:>3}. x{:04x}", i, addr);
+            }
+        }
+    }
+
+    fn add_breakpoint(&mut self, addr:u16) {
+        self.bps.insert(addr);
+    }
+
+    fn dbg_print_status(&self) {
+        println!("PC   = x{:04x}", self.pc );
+        println!("       nzp");
+        println!("COND = {:03b}", self.cnd );
     }
 
 }
@@ -474,6 +562,130 @@ mod isa {
 
     pub fn ld(dr:u16, off9:u16) -> u16 {
         opc(op::LD) | regf(dr, 9) | off9 & 0x1FF
+    }
+
+    pub fn decode(iw: u16) -> String {
+        use crate::lc3::{bits, bit, sextbits};
+        let opc = iw >> 12;
+        match opc {
+            op::BR => {
+                let mut nzps = String::new();
+                if bit(iw, 11) == 1 {nzps.push_str("n");}
+                if bit(iw, 10) == 1 {nzps.push_str("z");}
+                if bit(iw, 9)  == 1 {nzps.push_str("p");}
+                let off9 = sextbits(iw, 0, 9) as i16;
+                format!("BR{} {:04x} ({})", nzps, off9, off9)
+            },
+            op::ADD => {
+                let dr = bits(iw, 9, 3);
+                let sr1 = bits(iw, 6, 3);
+                let imm = bit(iw, 5);
+                if imm == 1 {
+                    let off5 = sextbits(iw, 0, 5) as i16;
+                    format!("ADD R{}, R{}, #{}", dr, sr1, off5)
+                } else {
+                    let sr2 = bits(iw, 0, 3);
+                    format!("ADD R{}, R{}, R{}", dr, sr1, sr2)
+                }
+            },
+
+            op::AND => {
+                let dr = bits(iw, 9, 3);
+                let sr1 = bits(iw, 6, 3);
+                let imm = bit(iw, 5);
+                if imm == 1 {
+                    let imm5 = sextbits(iw, 0, 5) as i16;
+                    format!("AND R{}, R{}, #{}", dr, sr1, imm5)
+                } else {
+                    let sr2 = bits(iw, 0, 3);
+                    format!("AND R{}, R{}, R{}", dr, sr1, sr2)
+                }
+            },
+
+            op::LEA => {
+                let dr = bits(iw, 9, 3);
+                let off9 = sextbits(iw, 0, 9) as i16;
+                format!("LEA R{} x{:04x}", dr, off9)
+            },
+
+            op::LD => {
+                let dr = bits(iw, 9, 3);
+                let off9 = sextbits(iw, 0, 9) as i16;
+                format!("LD R{} x{:04x}", dr, off9)
+            },
+
+            op::LDI => {
+                let dr = bits(iw, 9, 3);
+                let off9 = sextbits(iw, 0, 9) as i16;
+                format!("LDI R{} x{:04x}", dr, off9)
+            },
+
+            op::LDR => {
+                let dr = bits(iw, 9, 3);
+                let br = bits(iw, 6, 3);
+                let off6 = sextbits(iw, 0, 6) as i16;
+                format!("LDR R{} R{} x{:04x}", dr, br, off6)
+            },
+
+            op::ST => {
+                let sr = bits(iw, 9, 3);
+                let off9 = sextbits(iw, 0, 9) as i16;
+                format!("ST R{} x{:04x}", sr, off9)
+            },
+
+            op::STI => {
+                let sr = bits(iw, 9, 3);
+                let off9 = sextbits(iw, 0, 9) as i16;
+                format!("STI R{} x{:04x}", sr, off9)
+            },
+            op::STR => {
+                let dr = bits(iw, 9, 3);
+                let br = bits(iw, 6, 3);
+                let off6 = sextbits(iw, 0, 6) as i16;
+                format!("STR R{} R{} x{:04x}", dr, br, off6)
+            },
+            op::JSR => {
+                let mode = bit(iw, 11);
+                if mode == 1 {
+                    let off11 = sextbits(iw, 0, 11) as i16;
+                    format!("JSR x{:04x}", off11)
+                } else {
+                    let br = bits(iw, 6, 3);
+                    format!("JSRR R{}", br)
+                }
+            },
+            op::JMP => {
+                let br = bits(iw, 6, 3);
+                format!("JMP R{}", br)
+            },
+
+            op::RTI => {
+                format!("RTI")
+            },
+
+            op::TRAP => {
+                use crate::lc3::trap;
+                let trapv = bits(iw, 0, 8);
+                match trapv {
+                    trap::GETC  => "GETC".to_string(),
+                    trap::HALT  => "HALT".to_string(),
+                    trap::IN    => "IN".to_string(),
+                    trap::OUT   => "OUT".to_string(),
+                    trap::PUTS  => "PUTS".to_string(),
+                    trap::PUTSP => "PUTSP".to_string(),
+                    n           => format!("TRAP x{:02x}", n)
+                }
+            },
+            op::RES => {
+                format!("RES")
+            },
+            op::NOT => {
+                let dr = bits(iw, 9, 3);
+                let sr = bits(iw, 6, 3);
+                format!("NOT R{}, R{}", dr, sr)
+            },
+            _ => format!(".fill x{:04x}", iw)
+        }
     }
 }
 
